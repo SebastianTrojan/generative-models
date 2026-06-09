@@ -55,6 +55,90 @@ class MinibatchStdDev(nn.Module):
         return torch.cat([x, std], dim=1)
 
 
+class CleanDCGANGenerator(nn.Module):
+    """Canonical 64x64 DCGAN generator kept deliberately simple and stable."""
+
+    def __init__(
+        self,
+        latent_dim: int = 100,
+        channels: int = 3,
+        feature_maps: int = 64,
+        image_size: int = 64,
+    ) -> None:
+        super().__init__()
+        if image_size != 64:
+            raise ValueError("CleanDCGANGenerator currently supports image_size=64.")
+        self.latent_dim = latent_dim
+        self.channels = channels
+        self.feature_maps = feature_maps
+        self.image_size = image_size
+        ngf = feature_maps
+        self.net = nn.Sequential(
+            nn.ConvTranspose2d(latent_dim, ngf * 8, 4, 1, 0, bias=False),
+            nn.BatchNorm2d(ngf * 8),
+            nn.ReLU(True),
+            nn.ConvTranspose2d(ngf * 8, ngf * 4, 4, 2, 1, bias=False),
+            nn.BatchNorm2d(ngf * 4),
+            nn.ReLU(True),
+            nn.ConvTranspose2d(ngf * 4, ngf * 2, 4, 2, 1, bias=False),
+            nn.BatchNorm2d(ngf * 2),
+            nn.ReLU(True),
+            nn.ConvTranspose2d(ngf * 2, ngf, 4, 2, 1, bias=False),
+            nn.BatchNorm2d(ngf),
+            nn.ReLU(True),
+            nn.ConvTranspose2d(ngf, channels, 4, 2, 1, bias=False),
+            nn.Tanh(),
+        )
+
+    def forward(self, z: torch.Tensor) -> torch.Tensor:
+        return self.net(z)
+
+
+class CleanDCGANDiscriminator(nn.Module):
+    """Balanced 64x64 DCGAN discriminator with optional minibatch-stddev."""
+
+    def __init__(
+        self,
+        channels: int = 3,
+        feature_maps: int = 64,
+        image_size: int = 64,
+        spectral_norm: bool = False,
+        minibatch_stddev: bool = True,
+        dropout: float = 0.0,
+    ) -> None:
+        super().__init__()
+        if image_size != 64:
+            raise ValueError("CleanDCGANDiscriminator currently supports image_size=64.")
+        ndf = feature_maps
+
+        def conv(in_channels: int, out_channels: int, use_batchnorm: bool) -> list[nn.Module]:
+            layers: list[nn.Module] = [
+                maybe_spectral_norm(
+                    nn.Conv2d(in_channels, out_channels, 4, 2, 1, bias=False),
+                    spectral_norm,
+                )
+            ]
+            if use_batchnorm:
+                layers.append(nn.BatchNorm2d(out_channels))
+            layers.append(nn.LeakyReLU(0.2, inplace=True))
+            if dropout > 0:
+                layers.append(nn.Dropout2d(dropout))
+            return layers
+
+        final_channels = ndf * 8 + (1 if minibatch_stddev else 0)
+        self.net = nn.Sequential(
+            *conv(channels, ndf, use_batchnorm=False),
+            *conv(ndf, ndf * 2, use_batchnorm=True),
+            *conv(ndf * 2, ndf * 4, use_batchnorm=True),
+            *conv(ndf * 4, ndf * 8, use_batchnorm=True),
+            *([MinibatchStdDev()] if minibatch_stddev else []),
+            maybe_spectral_norm(nn.Conv2d(final_channels, 1, 4, 1, 0, bias=False), spectral_norm),
+        )
+
+    def forward(self, image: torch.Tensor) -> torch.Tensor:
+        return self.net(image).view(-1)
+
+
 class ResidualUpBlock(nn.Module):
     def __init__(self, in_channels: int, out_channels: int) -> None:
         super().__init__()
@@ -331,6 +415,13 @@ class Discriminator(nn.Module):
 
 def build_generator_from_config(config: dict) -> Generator:
     architecture = str(config.get("architecture", "dcgan")).lower()
+    if architecture in {"clean_dcgan", "dcgan_v3"}:
+        return CleanDCGANGenerator(
+            latent_dim=int(config.get("latent_dim", 100)),
+            channels=int(config.get("channels", 3)),
+            feature_maps=int(config.get("generator_features", 64)),
+            image_size=int(config.get("image_size", 64)),
+        )
     if architecture in {"residual", "wgan_gp"}:
         return ResidualGenerator(
             latent_dim=int(config.get("latent_dim", 256)),
@@ -352,6 +443,15 @@ def build_generator_from_config(config: dict) -> Generator:
 
 def build_discriminator_from_config(config: dict) -> Discriminator:
     architecture = str(config.get("architecture", "dcgan")).lower()
+    if architecture in {"clean_dcgan", "dcgan_v3"}:
+        return CleanDCGANDiscriminator(
+            channels=int(config.get("channels", 3)),
+            feature_maps=int(config.get("discriminator_features", 64)),
+            image_size=int(config.get("image_size", 64)),
+            spectral_norm=bool(config.get("spectral_norm", False)),
+            minibatch_stddev=bool(config.get("minibatch_stddev", True)),
+            dropout=float(config.get("discriminator_dropout", 0.0)),
+        )
     if architecture in {"residual", "wgan_gp"}:
         return ResidualCritic(
             channels=int(config.get("channels", 3)),

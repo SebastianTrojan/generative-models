@@ -54,6 +54,15 @@ def add_instance_noise(images: torch.Tensor, std: float) -> torch.Tensor:
     return (images + torch.randn_like(images) * std).clamp(-1.0, 1.0)
 
 
+def instance_noise_for_epoch(base_std: float, decay_epochs: int, epoch: int) -> float:
+    if base_std <= 0:
+        return 0.0
+    if decay_epochs <= 0:
+        return base_std
+    progress = min(1.0, max(0.0, (epoch - 1) / decay_epochs))
+    return base_std * (1.0 - progress)
+
+
 def random_translation(images: torch.Tensor, ratio: float = 0.125) -> torch.Tensor:
     max_shift = max(1, int(images.size(2) * ratio))
     padded = F.pad(images, (max_shift, max_shift, max_shift, max_shift), mode="reflect")
@@ -113,6 +122,13 @@ def discriminator_loss(
     fake_targets: torch.Tensor,
     criterion: nn.Module,
 ) -> torch.Tensor:
+    if loss_type == "lsgan":
+        return 0.5 * (
+            F.mse_loss(real_logits, real_targets)
+            + F.mse_loss(fake_logits, fake_targets)
+        )
+    if loss_type in {"non_saturating", "logistic", "softplus"}:
+        return F.softplus(fake_logits).mean() + F.softplus(-real_logits).mean()
     if loss_type == "hinge":
         return F.relu(1.0 - real_logits).mean() + F.relu(1.0 + fake_logits).mean()
     if loss_type == "wgan_gp":
@@ -123,6 +139,10 @@ def discriminator_loss(
 
 
 def generator_loss(fake_logits: torch.Tensor, loss_type: str, targets: torch.Tensor, criterion: nn.Module) -> torch.Tensor:
+    if loss_type == "lsgan":
+        return 0.5 * F.mse_loss(fake_logits, targets)
+    if loss_type in {"non_saturating", "logistic", "softplus"}:
+        return F.softplus(-fake_logits).mean()
     if loss_type == "hinge":
         return -fake_logits.mean()
     if loss_type == "wgan_gp":
@@ -147,6 +167,22 @@ def gradient_penalty(net_d: nn.Module, real_images: torch.Tensor, fake_images: t
     )[0]
     gradients = gradients.view(batch_size, -1)
     return ((gradients.norm(2, dim=1) - 1.0) ** 2).mean()
+
+
+def r1_regularization(real_logits: torch.Tensor, real_images: torch.Tensor) -> torch.Tensor:
+    gradients = torch.autograd.grad(
+        outputs=real_logits.sum(),
+        inputs=real_images,
+        create_graph=True,
+        retain_graph=True,
+        only_inputs=True,
+    )[0]
+    return gradients.pow(2).view(gradients.size(0), -1).sum(dim=1).mean()
+
+
+def ensure_finite(tensor: torch.Tensor, name: str, epoch: int) -> None:
+    if not torch.isfinite(tensor).all():
+        raise RuntimeError(f"Non-finite {name} detected at epoch {epoch}; stop this run and lower learning rate/disable AMP.")
 
 
 def make_ema_model(net_g: nn.Module, enabled: bool) -> nn.Module | None:
@@ -326,10 +362,16 @@ def main() -> None:
     checkpoint_every = int(config.get("checkpoint_every", 10))
     real_smoothing = float(config.get("real_label_smoothing", 0.9))
     instance_noise_std = float(config.get("instance_noise_std", 0.0))
+    instance_noise_decay_epochs = int(config.get("instance_noise_decay_epochs", 0))
     gan_loss = str(config.get("gan_loss", "bce")).lower()
     augment_policy = str(config.get("diff_augment_policy", "")) if bool(config.get("diff_augment", False)) else ""
     discriminator_steps = max(1, int(config.get("discriminator_steps", 1)))
     gradient_penalty_weight = float(config.get("gradient_penalty_weight", 10.0))
+    r1_gamma = float(config.get("r1_gamma", 0.0))
+    r1_interval = max(1, int(config.get("r1_interval", 16)))
+    grad_clip_g = float(config.get("grad_clip_g", 0.0))
+    grad_clip_d = float(config.get("grad_clip_d", 0.0))
+    fail_on_nonfinite = bool(config.get("fail_on_nonfinite", True))
     if gan_loss == "wgan_gp":
         print(
             f"WGAN-GP enabled: {discriminator_steps} critic step(s), "
@@ -338,10 +380,18 @@ def main() -> None:
         )
     elif gan_loss == "hinge":
         print("Hinge loss enabled. Logged D(real)/D(fake) are raw discriminator scores.")
+    elif gan_loss in {"non_saturating", "logistic", "softplus"}:
+        print("Non-saturating logistic loss enabled. Logged D(real)/D(fake) are raw discriminator scores.")
+        if r1_gamma > 0:
+            print(f"R1 regularization enabled: gamma={r1_gamma}, interval={r1_interval}.")
+    elif gan_loss == "lsgan":
+        print("LSGAN loss enabled. Logged D(real)/D(fake) are raw discriminator scores.")
     metrics_path = ckpt_dir / "metrics.csv"
+    global_step = start_epoch * len(loader)
 
     for epoch in range(start_epoch + 1, epochs + 1):
         epoch_start = time.time()
+        current_instance_noise = instance_noise_for_epoch(instance_noise_std, instance_noise_decay_epochs, epoch)
         net_g.train()
         net_d.train()
         running_g = 0.0
@@ -360,35 +410,55 @@ def main() -> None:
             for _ in range(discriminator_steps):
                 opt_d.zero_grad(set_to_none=True)
                 if gan_loss == "wgan_gp":
-                    noisy_real = add_instance_noise(real_images, instance_noise_std)
+                    noisy_real = add_instance_noise(real_images, current_instance_noise)
                     real_input = diff_augment(noisy_real, augment_policy)
                     with torch.no_grad():
                         noise = torch.randn(batch_size, latent_dim, 1, 1, device=device)
                         fake_images = net_g(noise)
-                    noisy_fake = add_instance_noise(fake_images, instance_noise_std)
+                    noisy_fake = add_instance_noise(fake_images, current_instance_noise)
                     fake_input = diff_augment(noisy_fake, augment_policy)
                     real_logits = net_d(real_input.float())
                     fake_logits = net_d(fake_input.float())
                     gp = gradient_penalty(net_d, real_input.float(), fake_input.float())
                     loss_d = discriminator_loss(real_logits, fake_logits, gan_loss, real_targets, fake_targets, criterion)
                     loss_d = loss_d + gradient_penalty_weight * gp
+                    if fail_on_nonfinite:
+                        ensure_finite(loss_d, "discriminator loss", epoch)
                     loss_d.backward()
+                    if grad_clip_d > 0:
+                        torch.nn.utils.clip_grad_norm_(net_d.parameters(), grad_clip_d)
                     opt_d.step()
                 else:
+                    apply_r1 = (
+                        gan_loss in {"non_saturating", "logistic", "softplus"}
+                        and r1_gamma > 0
+                        and global_step % r1_interval == 0
+                    )
                     with autocast_context(device, amp_enabled):
-                        noisy_real = add_instance_noise(real_images, instance_noise_std)
-                        real_input = diff_augment(noisy_real, augment_policy)
+                        noisy_real = add_instance_noise(real_images, current_instance_noise)
+                        real_input = diff_augment(noisy_real, augment_policy).detach()
+                        if apply_r1:
+                            real_input.requires_grad_(True)
                         real_logits = net_d(real_input)
 
                         noise = torch.randn(batch_size, latent_dim, 1, 1, device=device)
                         fake_images = net_g(noise)
-                        noisy_fake = add_instance_noise(fake_images.detach(), instance_noise_std)
+                        noisy_fake = add_instance_noise(fake_images.detach(), current_instance_noise)
                         fake_input = diff_augment(noisy_fake, augment_policy)
                         fake_logits = net_d(fake_input)
                         loss_d = discriminator_loss(real_logits, fake_logits, gan_loss, real_targets, fake_targets, criterion)
+                    if apply_r1:
+                        r1_penalty = r1_regularization(real_logits.float(), real_input)
+                        loss_d = loss_d + 0.5 * r1_gamma * r1_interval * r1_penalty
+                    if fail_on_nonfinite:
+                        ensure_finite(loss_d, "discriminator loss", epoch)
                     scaler.scale(loss_d).backward()
+                    if grad_clip_d > 0:
+                        scaler.unscale_(opt_d)
+                        torch.nn.utils.clip_grad_norm_(net_d.parameters(), grad_clip_d)
                     scaler.step(opt_d)
                     scaler.update()
+                global_step += 1
 
             opt_g.zero_grad(set_to_none=True)
             with autocast_context(device, amp_enabled and gan_loss != "wgan_gp"):
@@ -397,17 +467,24 @@ def main() -> None:
                 generator_input = diff_augment(generated, augment_policy)
                 generator_logits = net_d(generator_input)
                 loss_g = generator_loss(generator_logits, gan_loss, torch.ones(batch_size, device=device), criterion)
+            if fail_on_nonfinite:
+                ensure_finite(loss_g, "generator loss", epoch)
             if gan_loss == "wgan_gp":
                 loss_g.backward()
+                if grad_clip_g > 0:
+                    torch.nn.utils.clip_grad_norm_(net_g.parameters(), grad_clip_g)
                 opt_g.step()
             else:
                 scaler.scale(loss_g).backward()
+                if grad_clip_g > 0:
+                    scaler.unscale_(opt_g)
+                    torch.nn.utils.clip_grad_norm_(net_g.parameters(), grad_clip_g)
                 scaler.step(opt_g)
                 scaler.update()
             update_ema(ema_g, net_g, ema_decay)
 
             with torch.no_grad():
-                if gan_loss in {"wgan_gp", "hinge"}:
+                if gan_loss in {"wgan_gp", "hinge", "non_saturating", "logistic", "softplus", "lsgan"}:
                     real_score = real_logits.mean().item()
                     fake_score = fake_logits.mean().item()
                 else:
