@@ -1,0 +1,9 @@
+torch
+torchvision
+Pillow
+numpy
+matplotlib
+tqdm
+PyYAML
+clean-fid
+pytorch-fid

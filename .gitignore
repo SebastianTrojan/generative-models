@@ -1,0 +1,16 @@
+data/
+venv/
+__pycache__/
+.venv/
+*.py[cod]
+
+outputs/**
+!outputs/
+!outputs/checkpoints/
+!outputs/checkpoints/.gitkeep
+!outputs/fid/
+!outputs/fid/.gitkeep
+!outputs/interpolations/
+!outputs/interpolations/.gitkeep
+!outputs/samples/
+!outputs/samples/.gitkeep
