@@ -12,7 +12,10 @@ __pycache__/
 *.fdb_latexmk
 *.fls
 *.log
+*.nav
 *.out
+*.snm
+*.vrb
 *.run.xml
 *.synctex.gz
 *.toc
