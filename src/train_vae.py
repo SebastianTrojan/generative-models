@@ -119,6 +119,9 @@ def main() -> None:
     mse_weight = float(config.get("mse_weight", 1.0))
     l1_weight = float(config.get("l1_weight", 0.25))
     free_bits = float(config.get("free_bits", 0.0))
+    multiscale_levels = int(config.get("multiscale_levels", 0))
+    multiscale_weight = float(config.get("multiscale_weight", 0.5))
+    sample_temperature = float(config.get("sample_temperature", 1.0))
     grad_clip = float(config.get("grad_clip", 0.0))
     metrics_path = ckpt_dir / "metrics.csv"
 
@@ -147,6 +150,8 @@ def main() -> None:
                     mse_weight=mse_weight,
                     l1_weight=l1_weight,
                     free_bits=free_bits,
+                    multiscale_levels=multiscale_levels,
+                    multiscale_weight=multiscale_weight,
                 )
             scaler.scale(loss).backward()
             if grad_clip > 0:
@@ -187,7 +192,11 @@ def main() -> None:
             model.eval()
             with torch.no_grad():
                 reconstruction, _, _ = model(fixed_images)
-                random_samples = model.sample(int(config.get("num_sample_images", 64)), device)
+                random_samples = model.sample(
+                    int(config.get("num_sample_images", 64)),
+                    device,
+                    temperature=sample_temperature,
+                )
             recon_grid = torch.cat([fixed_images, reconstruction], dim=0)
             save_tensor_grid(recon_grid, samples / f"reconstruction_epoch_{epoch:04d}.png")
             save_tensor_grid(random_samples, samples / f"samples_epoch_{epoch:04d}.png")

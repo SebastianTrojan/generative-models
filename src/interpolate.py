@@ -1,23 +1,18 @@
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
 
 import numpy as np
 import torch
 
-from .models.dcgan import build_generator_from_config
-from .models.ddpm import build_denoiser_from_config, build_diffusion_from_config
-from .models.vae import build_vae_from_config
+from .generate import load_model
 from .utils import (
     get_device,
-    load_yaml,
     output_root,
     resolve_path,
     save_image_batch,
     save_tensor_grid,
     set_seed,
-    torch_load,
 )
 
 
@@ -30,41 +25,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--steps", type=int, default=10, help="Total interpolation images, including endpoints.")
     parser.add_argument("--seed", type=int, default=42, help="Random seed.")
     parser.add_argument("--device", default=None, help="Device override, e.g. cuda, cuda:0, or cpu.")
+    parser.add_argument(
+        "--sample-temperature",
+        type=float,
+        default=None,
+        help="Override VAE latent sampling temperature for interpolation endpoints.",
+    )
     return parser.parse_args()
-
-
-def load_config_from_checkpoint(checkpoint: dict, config_path: str | None) -> dict:
-    config = {}
-    if config_path:
-        config.update(load_yaml(config_path))
-    config.update(checkpoint.get("config", {}))
-    return config
-
-
-def load_interpolation_model(model_name: str, checkpoint_path: str | Path, config_path: str | None, device: torch.device):
-    checkpoint = torch_load(checkpoint_path, device)
-    config = load_config_from_checkpoint(checkpoint, config_path)
-    state_dict = checkpoint.get("state_dict", checkpoint.get("generator_state_dict"))
-    if state_dict is None:
-        raise ValueError(f"Checkpoint does not contain a compatible state_dict: {checkpoint_path}")
-
-    if model_name == "dcgan":
-        model = build_generator_from_config(config).to(device)
-        model.load_state_dict(state_dict)
-        model.eval()
-        return model, config
-
-    if model_name == "vae":
-        model = build_vae_from_config(config).to(device)
-        model.load_state_dict(state_dict)
-        model.eval()
-        return model, config
-
-    denoiser = build_denoiser_from_config(config).to(device)
-    denoiser.load_state_dict(state_dict)
-    denoiser.eval()
-    diffusion = build_diffusion_from_config(config, device=device)
-    return {"denoiser": denoiser, "diffusion": diffusion}, config
 
 
 def interpolate_tensors(a: torch.Tensor, b: torch.Tensor, steps: int) -> tuple[torch.Tensor, torch.Tensor]:
@@ -86,8 +53,9 @@ def generate_interpolation(model_name: str, model, config: dict, steps: int, dev
 
     if model_name == "vae":
         latent_dim = int(config.get("latent_dim", 128))
-        z_a = torch.randn(1, latent_dim, device=device)
-        z_b = torch.randn(1, latent_dim, device=device)
+        temperature = float(config.get("sample_temperature", 1.0))
+        z_a = torch.randn(1, latent_dim, device=device) * temperature
+        z_b = torch.randn(1, latent_dim, device=device) * temperature
         latents, coefficients = interpolate_tensors(z_a, z_b, steps)
         images = model.decode(latents)
         return images, z_a, z_b, latents, coefficients
@@ -114,7 +82,9 @@ def main() -> None:
     set_seed(args.seed)
     device = get_device(args.device)
     checkpoint_path = resolve_path(args.checkpoint, args.config, must_exist=True)
-    model, config = load_interpolation_model(args.model, checkpoint_path, args.config, device)
+    model, config = load_model(args.model, checkpoint_path, args.config, device)
+    if args.model == "vae" and args.sample_temperature is not None:
+        config["sample_temperature"] = args.sample_temperature
 
     if args.out_dir:
         out_dir = resolve_path(args.out_dir, config.get("_config_path"))

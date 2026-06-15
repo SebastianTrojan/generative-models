@@ -9,6 +9,7 @@ from .models.dcgan import build_generator_from_config
 from .models.ddpm import build_denoiser_from_config, build_diffusion_from_config
 from .models.vae import build_vae_from_config
 from .utils import (
+    checkpoint_config,
     get_device,
     load_yaml,
     resolve_path,
@@ -29,15 +30,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--out-dir", required=True, help="Directory for PNG images and grid.")
     parser.add_argument("--seed", type=int, default=42, help="Random seed.")
     parser.add_argument("--device", default=None, help="Device override, e.g. cuda, cuda:0, or cpu.")
+    parser.add_argument(
+        "--sample-temperature",
+        type=float,
+        default=None,
+        help="Override VAE latent sampling temperature. Lower values can improve coherence at the cost of diversity.",
+    )
     return parser.parse_args()
 
 
 def load_generation_config(checkpoint: dict, config_path: str | None) -> dict:
-    config = {}
-    if config_path:
-        config.update(load_yaml(config_path))
-    config.update(checkpoint.get("config", {}))
-    return config
+    fallback = load_yaml(config_path) if config_path else {}
+    return checkpoint_config(checkpoint, fallback)
 
 
 def load_model(model_name: str, checkpoint_path: str | Path, config_path: str | None, device: torch.device):
@@ -79,7 +83,8 @@ def generate_batch(model_name: str, model, batch_size: int, config: dict, device
         )
         return model["diffusion"].p_sample_loop(model["denoiser"], shape, device=device, progress=False)
     latent_dim = int(config.get("latent_dim", 128))
-    z = torch.randn(batch_size, latent_dim, device=device)
+    temperature = float(config.get("sample_temperature", 1.0))
+    z = torch.randn(batch_size, latent_dim, device=device) * temperature
     return model.decode(z)
 
 
@@ -89,6 +94,8 @@ def main() -> None:
     device = get_device(args.device)
     checkpoint_path = resolve_path(args.checkpoint, args.config, must_exist=True)
     model, config = load_model(args.model, checkpoint_path, args.config, device)
+    if args.model == "vae" and args.sample_temperature is not None:
+        config["sample_temperature"] = args.sample_temperature
     out_dir = resolve_path(args.out_dir, config.get("_config_path"))
     out_dir.mkdir(parents=True, exist_ok=True)
 

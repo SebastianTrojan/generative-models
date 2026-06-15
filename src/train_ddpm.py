@@ -106,6 +106,7 @@ def main() -> None:
     sample_every = int(config.get("sample_every", 5))
     checkpoint_every = int(config.get("checkpoint_every", 10))
     num_sample_images = int(config.get("num_sample_images", 16))
+    grad_clip = float(config.get("grad_clip", 1.0))
     metrics_path = ckpt_dir / "metrics.csv"
 
     for epoch in range(start_epoch + 1, epochs + 1):
@@ -121,8 +122,9 @@ def main() -> None:
             with autocast_context(device, amp_enabled):
                 loss = diffusion.training_loss(model, images)
             scaler.scale(loss).backward()
-            scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), float(config.get("grad_clip", 1.0)))
+            if grad_clip > 0:
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
             scaler.step(optimizer)
             scaler.update()
 
@@ -166,4 +168,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

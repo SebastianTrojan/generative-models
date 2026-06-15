@@ -1,0 +1,25 @@
+run_name: ddpm_cat64_lr1e4
+dataset_root: data/raw/cats
+output_dir: outputs
+image_size: 64
+channels: 3
+base_channels: 64
+channel_mults: [1, 2, 4, 4]
+num_res_blocks: 2
+attention_resolutions: [16]
+dropout: 0.1
+timesteps: 500
+beta_schedule: cosine
+beta_start: 0.0001
+beta_end: 0.02
+batch_size: 32
+epochs: 300
+lr: 0.0001
+weight_decay: 0.0
+grad_clip: 1.0
+num_workers: 8
+sample_every: 5
+checkpoint_every: 10
+num_sample_images: 16
+mixed_precision: true
+seed: 31415

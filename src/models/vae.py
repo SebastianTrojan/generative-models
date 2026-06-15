@@ -91,6 +91,7 @@ class ConvVAE(nn.Module):
         channel_mults: tuple[int, ...] = (1, 2, 4, 8),
         dropout: float = 0.0,
         attention: bool = True,
+        decoder_refine_blocks: int = 0,
     ) -> None:
         super().__init__()
         if image_size != 64:
@@ -105,6 +106,7 @@ class ConvVAE(nn.Module):
         self.channel_mults = channel_mults
         self.dropout = dropout
         self.attention = attention
+        self.decoder_refine_blocks = decoder_refine_blocks
 
         stage_channels = [base_channels * mult for mult in channel_mults]
         self.stem = nn.Conv2d(channels, stage_channels[0], 3, 1, 1)
@@ -147,6 +149,9 @@ class ConvVAE(nn.Module):
                 decoder_blocks.append(AttentionBlock(out_channels))
             in_channels = out_channels
         self.decoder = nn.ModuleList(decoder_blocks)
+        self.output_refine = nn.Sequential(
+            *[ResidualBlock(in_channels, in_channels, dropout) for _ in range(max(0, decoder_refine_blocks))]
+        )
         self.output_norm = nn.GroupNorm(default_group_count(in_channels), in_channels)
         self.output_conv = nn.Conv2d(in_channels, channels, 3, 1, 1)
 
@@ -175,6 +180,7 @@ class ConvVAE(nn.Module):
         features = self.decoder_bottleneck(features)
         for layer in self.decoder:
             features = layer(features)
+        features = self.output_refine(features)
         return torch.tanh(self.output_conv(F.silu(self.output_norm(features))))
 
     def forward(self, image: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -182,8 +188,8 @@ class ConvVAE(nn.Module):
         z = self.reparameterize(mu, logvar)
         return self.decode(z), mu, logvar
 
-    def sample(self, num_samples: int, device: torch.device) -> torch.Tensor:
-        z = torch.randn(num_samples, self.latent_dim, device=device)
+    def sample(self, num_samples: int, device: torch.device, temperature: float = 1.0) -> torch.Tensor:
+        z = torch.randn(num_samples, self.latent_dim, device=device) * temperature
         return self.decode(z)
 
 
@@ -207,6 +213,30 @@ def reconstruction_loss(
     raise ValueError(f"Unsupported VAE reconstruction loss: {loss_type}")
 
 
+def multiscale_reconstruction_loss(
+    reconstruction: torch.Tensor,
+    target: torch.Tensor,
+    loss_type: str,
+    mse_weight: float,
+    l1_weight: float,
+    levels: int = 0,
+    scale_weight: float = 0.5,
+) -> torch.Tensor:
+    loss = reconstruction_loss(reconstruction, target, loss_type, mse_weight, l1_weight)
+    for level in range(1, max(0, levels) + 1):
+        kernel_size = 2**level
+        recon_small = F.avg_pool2d(reconstruction, kernel_size=kernel_size)
+        target_small = F.avg_pool2d(target, kernel_size=kernel_size)
+        loss = loss + (scale_weight**level) * reconstruction_loss(
+            recon_small,
+            target_small,
+            loss_type,
+            mse_weight,
+            l1_weight,
+        )
+    return loss
+
+
 def kl_divergence(mu: torch.Tensor, logvar: torch.Tensor, free_bits: float = 0.0) -> torch.Tensor:
     kl_per_dim = -0.5 * (1 + logvar - mu.pow(2) - logvar.exp())
     if free_bits > 0:
@@ -224,13 +254,17 @@ def vae_loss(
     mse_weight: float = 1.0,
     l1_weight: float = 0.25,
     free_bits: float = 0.0,
+    multiscale_levels: int = 0,
+    multiscale_weight: float = 0.5,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    recon_loss = reconstruction_loss(
+    recon_loss = multiscale_reconstruction_loss(
         reconstruction,
         target,
         loss_type=reconstruction_loss_type,
         mse_weight=mse_weight,
         l1_weight=l1_weight,
+        levels=multiscale_levels,
+        scale_weight=multiscale_weight,
     )
     kl_loss = kl_divergence(mu, logvar, free_bits=free_bits)
     total = recon_loss + beta * kl_loss
@@ -246,5 +280,5 @@ def build_vae_from_config(config: dict) -> ConvVAE:
         channel_mults=tuple(int(value) for value in config.get("channel_mults", [1, 2, 4, 8])),
         dropout=float(config.get("dropout", 0.0)),
         attention=bool(config.get("attention", True)),
+        decoder_refine_blocks=int(config.get("decoder_refine_blocks", 0)),
     )
-

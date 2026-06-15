@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
 
 import torch
 
@@ -29,6 +28,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-pairwise-images", type=int, default=256, help="Limit for pairwise distance computation.")
     parser.add_argument("--seed", type=int, default=42, help="Random seed.")
     parser.add_argument("--device", default=None, help="Device override, e.g. cuda, cuda:0, or cpu.")
+    parser.add_argument(
+        "--sample-temperature",
+        type=float,
+        default=None,
+        help="Override VAE latent sampling temperature.",
+    )
     return parser.parse_args()
 
 
@@ -80,6 +85,8 @@ def main() -> None:
     checkpoint_path = resolve_path(args.checkpoint, args.config, must_exist=True)
     model, model_config = load_model(args.model, checkpoint_path, args.config, device)
     model_config.update({key: value for key, value in config.items() if key not in model_config or key == "dataset_root"})
+    if args.model == "vae" and args.sample_temperature is not None:
+        model_config["sample_temperature"] = args.sample_temperature
 
     out_dir = output_root(model_config) / "diversity" / model_config.get("run_name", args.model)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -91,6 +98,7 @@ def main() -> None:
             "model": args.model,
             "run_name": model_config.get("run_name", args.model),
             "checkpoint_path": str(checkpoint_path),
+            "sample_temperature": model_config.get("sample_temperature") if args.model == "vae" else None,
             "timestamp": timestamp(),
             "note": "Pixel-distance metrics are lightweight diagnostics; inspect grids and FID as well.",
         }

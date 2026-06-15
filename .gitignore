@@ -4,13 +4,32 @@ __pycache__/
 .venv/
 *.py[cod]
 
+# LaTeX build artifacts
+*.aux
+*.bbl
+*.bcf
+*.blg
+*.fdb_latexmk
+*.fls
+*.log
+*.out
+*.run.xml
+*.synctex.gz
+*.toc
+
 outputs/**
 !outputs/
 !outputs/checkpoints/
 !outputs/checkpoints/.gitkeep
 !outputs/fid/
 !outputs/fid/.gitkeep
+!outputs/generated/
+!outputs/generated/.gitkeep
 !outputs/interpolations/
 !outputs/interpolations/.gitkeep
+!outputs/diversity/
+!outputs/diversity/.gitkeep
+!outputs/reconstructions/
+!outputs/reconstructions/.gitkeep
 !outputs/samples/
 !outputs/samples/.gitkeep

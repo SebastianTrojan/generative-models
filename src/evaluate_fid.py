@@ -31,6 +31,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-workers", type=int, default=4, help="Worker count for preprocessing/FID backend.")
     parser.add_argument("--seed", type=int, default=42, help="Random seed.")
     parser.add_argument("--device", default=None, help="Device override, e.g. cuda, cuda:0, or cpu.")
+    parser.add_argument(
+        "--sample-temperature",
+        type=float,
+        default=None,
+        help="Override VAE latent sampling temperature for generated FID images.",
+    )
     return parser.parse_args()
 
 
@@ -98,6 +104,8 @@ def main() -> None:
     checkpoint_path = resolve_path(args.checkpoint, args.config, must_exist=True)
     model, model_config = load_model(args.model, checkpoint_path, args.config, device)
     model_config.update({key: value for key, value in config.items() if key not in model_config or key == "dataset_root"})
+    if args.model == "vae" and args.sample_temperature is not None:
+        model_config["sample_temperature"] = args.sample_temperature
 
     dataset_root = resolve_path(config["dataset_root"], args.config, must_exist=True)
     image_size = int(model_config.get("image_size", config.get("image_size", 64)))
@@ -121,6 +129,7 @@ def main() -> None:
         "image_size": image_size,
         "fid": fid_value,
         "backend": backend,
+        "sample_temperature": model_config.get("sample_temperature") if args.model == "vae" else None,
         "real_dir": str(real_dir),
         "fake_dir": str(fake_dir),
         "timestamp": timestamp(),
