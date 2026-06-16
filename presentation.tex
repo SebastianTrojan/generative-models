@@ -92,7 +92,7 @@
           \item U-Net denoiser
           \item Learns to predict noise
           \item Iterative reverse process
-          \item Deterministic DDIM-style interpolation
+          \item Starts generation from Gaussian noise
         \end{itemize}
       \end{block}
     \end{column}
@@ -312,17 +312,42 @@
 \end{frame}
 
 \begin{frame}{Mode Collapse and Diversity}
-  \begin{itemize}
-    \item Mode collapse was checked with sample grids and simple pixel-space diversity diagnostics.
-    \item Final diversity RMSE values:
+  \begin{columns}[T]
+    \begin{column}{0.45\linewidth}
+      \small
       \begin{itemize}
-        \item DCGAN: 0.3682,
-        \item VAE: 0.1351,
-        \item DDPM: 0.4179.
+        \item Mode collapse was checked with sample grids and pixel-space diversity diagnostics.
+        \item Final diversity RMSE:
+          \begin{itemize}
+            \item DCGAN: 0.3682,
+            \item VAE: 0.1351,
+            \item DDPM: 0.4179.
+          \end{itemize}
+        \item DCGAN did not collapse to one image type, but repeated textures and malformed samples appeared.
       \end{itemize}
-    \item DCGAN did not collapse to one image type, but repeated textures and malformed samples appeared.
-    \item DDPM showed the highest measured diversity.
-  \end{itemize}
+    \end{column}
+    \begin{column}{0.52\linewidth}
+      \centering
+      \scriptsize
+      \textbf{DCGAN stabilisation variants}\\[0.1cm]
+      \begin{tabular}{lr}
+        \toprule
+        Variant & FID \\
+        \midrule
+        Stronger discriminator & \textbf{143.79} \\
+        No instance noise & 155.60 \\
+        Baseline & 161.62 \\
+        No label smoothing & 173.37 \\
+        Lower generator LR & 175.31 \\
+        Minibatch stddev & 183.10 \\
+        \bottomrule
+      \end{tabular}
+
+      \vspace{0.2cm}
+      \footnotesize
+      Removing instance noise slightly improved FID, while minibatch stddev did not help in this run.
+    \end{column}
+  \end{columns}
 \end{frame}
 
 \begin{frame}{Cats-and-Dogs Extension: FID}

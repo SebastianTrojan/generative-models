@@ -198,7 +198,7 @@ Minibatch standard deviation & extra diversity feature & 183.10 \\
 \end{tabular}
 \end{table}
 
-The best DCGAN result came from increasing the discriminator learning rate while keeping the other stabilisers active. This suggests that the baseline generator benefited from a slightly stronger discriminator signal, but only when label smoothing and instance noise were still used.
+The best DCGAN result came from increasing the discriminator learning rate while keeping the baseline stabilisers active. This suggests that, under the tested setup, the generator benefited from a slightly stronger discriminator signal.
 
 \subsection{VAE experiments}
 
@@ -274,8 +274,6 @@ The complete VAE temperature results are listed in Appendix \ref{app:vae-full-re
 
 The DDPM sweep tested model capacity, noise scheduling, regularisation, learning rate, and diffusion-chain length.
 The baseline linear-schedule model was compared with a cosine schedule, a wider U-Net with base channel count 96, a lower learning rate, no dropout, and a longer 1000-step diffusion process.
-Although the 1000-step model uses a finer noising chain, it is also slower to sample and did not improve FID in this limited-compute setting.
-
 \begin{table}[H]
 \centering
 \caption{DDPM hyperparameter comparison.}
@@ -294,7 +292,8 @@ Longer diffusion chain & 1000 timesteps & 90.19 \\
 \end{tabular}
 \end{table}
 
-The best DDPM result came from increasing U-Net width. The baseline was already close to this result, while the cosine schedule, lower learning rate, disabled dropout, and longer diffusion chain all reduced performance in this setup.
+The best DDPM result came from increasing U-Net width. The baseline was already close to this result, while the cosine schedule, lower learning rate, disabled dropout, and longer diffusion chain all reduced performance in this setup. Although the 1000-step model uses a finer noising chain, it is also slower to sample and did not improve FID in this limited-compute setting.
+
 
 \section{Main results}
 
@@ -372,8 +371,9 @@ The lower VAE value is consistent with its blurry and visually similar random sa
 The DCGAN did not collapse to one image type, but the grid shows some repeated colour/texture patterns and malformed outputs.
 The DDPM showed the highest measured diversity and the most varied samples.
 
-If severe collapse had appeared in the DCGAN, the planned mitigations were label smoothing, instance noise, gradient clipping, rebalancing generator and discriminator learning rates, and minibatch-standard-deviation features.
-In the tested sweep, minibatch standard deviation did not improve FID. The best DCGAN used a moderately stronger discriminator learning rate together with label smoothing and instance noise.
+To reduce collapse risk, the DCGAN baseline used label smoothing, instance noise, and separate generator/discriminator learning rates.
+The sweep then tested related changes, including removing instance noise, removing label smoothing, changing the learning-rate balance, and adding minibatch-standard-deviation features.
+Minibatch standard deviation did not improve FID in this experiment.
 
 \section{Interpolation}
 
